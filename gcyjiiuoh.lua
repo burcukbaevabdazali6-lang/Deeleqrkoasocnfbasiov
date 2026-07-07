@@ -7752,128 +7752,101 @@ do
     local Players = game:GetService("Players")
     local LocalPlayer = Players.LocalPlayer
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
-    local RunService = game:GetService("RunService")
+    local Workspace = workspace
 
-    local MiscGroup = Tabs.Misc:CreateBlock({Name = "Packet Detector", Side = "Left"})
     local packetConnections = {}
     local lastNotify = 0
     local COOLDOWN = 0.5
-    local PacketDetector = {}
 
-    function PacketDetector.resolveSender(args)
+    local function resolveSender(args)
         for _, v in ipairs(args) do
             if typeof(v) == "Instance" then
-                if v:IsA("Player") then return v end
+                if v:IsA("Player") then
+                    return v
+                end
                 local model = v:IsA("Model") and v or v:FindFirstAncestorOfClass("Model")
                 if model then
                     local plr = Players:GetPlayerFromCharacter(model)
-                    if plr then return plr end
+                    if plr then
+                        return plr
+                    end
                 end
             end
         end
         return LocalPlayer
     end
 
-    function PacketDetector.shortenString(str)
-        return #str <= 80 and str or str:sub(1, 80) .. "... (+" .. tostring(#str - 80) .. " chars)"
-    end
-
-    function PacketDetector.summarizeTable(tbl)
-        local preview = {}
-        local count = 0
-        for _, v in pairs(tbl) do
-            count = count + 1
-            if count <= 5 then
-                local s, val = pcall(tostring, v)
-                table.insert(preview, s and val or "unknown")
-            end
+    local function handlePacketEvent(eventType, remoteName, ...)
+        if tick() - lastNotify < COOLDOWN then
+            return
         end
-        return "table[" .. count .. "] { " .. table.concat(preview, ", ") .. (count > 5 and " ... }" or " }")
-    end
-
-    function PacketDetector.compressArgs(args)
-        local seen = {}
-        local summary = {}
-        for _, v in ipairs(args) do
-            local t = typeof(v)
-            local key
-            if t == "string" then
-                key = "str:" .. PacketDetector.shortenString(v)
-            elseif t == "Instance" then
-                local className = "Unknown"
-                local name = "Unknown"
-                pcall(function() className = v.ClassName end)
-                pcall(function() name = v.Name end)
-                key = "inst:" .. className .. "(" .. name .. ")"
-            elseif t == "table" then
-                key = "tbl:" .. PacketDetector.summarizeTable(v)
-            else
-                local success, strVal = pcall(tostring, v)
-                key = t .. ":" .. (success and strVal or "unprintable")
-            end
-            seen[key] = (seen[key] or 0) + 1
-        end
-        for k, count in pairs(seen) do
-            table.insert(summary, count > 1 and k .. " x" .. count or k)
-        end
-        return summary
-    end
-
-    function PacketDetector.handlePacketEvent(eventType, remoteName, ...)
-        if tick() - lastNotify < COOLDOWN then return end
         lastNotify = tick()
+
         local args = {...}
         local totalBytes = 0
         for _, v in ipairs(args) do
-            if typeof(v) == "string" then totalBytes = totalBytes + #v end
+            if typeof(v) == "string" then
+                totalBytes = totalBytes + #v
+            end
         end
 
-        local sender = PacketDetector.resolveSender(args)
+        local sender = resolveSender(args)
         local senderName = "Unknown"
         if sender then
             local s, name = pcall(function() return sender.DisplayName or sender.Name end)
-            if s then senderName = name end
-            if sender == LocalPlayer then senderName = senderName .. " (You)" end
+            if s then
+                senderName = name
+            end
+            if sender == LocalPlayer then
+                senderName = senderName .. " (You)"
+            end
         end
 
         local mbSize = totalBytes / (1024 * 1024)
-        local summarized = PacketDetector.compressArgs(args)
-        local argsStr = #summarized > 0 and table.concat(summarized, "\n") or "None"
+        local argsCount = #args
         Library:Notify({
             Title = string.format("[%s] %s", eventType, remoteName),
-            Content = string.format("Player: %s\nSize: %.4f MB\nArgs:\n%s", senderName, mbSize, argsStr),
+            Content = string.format("Player: %s\nSize: %.4f MB\nArgs: %d", senderName, mbSize, argsCount),
             Duration = 6
         })
     end
 
-    function PacketDetector.checkAndHookBlobRemote(child)
+    local function checkAndHookBlobRemote(child)
         if child:IsA("RemoteEvent") and child.Name == "RelayClientAnimation" then
             local parent = child.Parent
             if parent and parent.Name == "BlobmanAnimations" then
                 local grandParentName = parent.Parent and parent.Parent.Name or "Unknown"
-                table.insert(packetConnections, child.OnClientEvent:Connect(function(...) PacketDetector.handlePacketEvent("Blob", grandParentName, ...) end))
+                table.insert(packetConnections, child.OnClientEvent:Connect(function(...) handlePacketEvent("Blob", grandParentName, ...) end))
             end
         end
     end
 
-    function PacketDetector.start()
-        if #packetConnections > 0 then return end
+    local function startPacketDetector()
+        if #packetConnections > 0 then
+            return
+        end
+
         task.spawn(function()
             local grabEvents = ReplicatedStorage:WaitForChild("GrabEvents", 5)
             if grabEvents then
                 local grabRemote = grabEvents:WaitForChild("ExtendGrabLine", 5)
                 if grabRemote then
-                    table.insert(packetConnections, grabRemote.OnClientEvent:Connect(function(...) PacketDetector.handlePacketEvent("Grab", "ExtendGrabLine", ...) end))
+                    table.insert(packetConnections, grabRemote.OnClientEvent:Connect(function(...) handlePacketEvent("Grab", "ExtendGrabLine", ...) end))
                 end
             end
         end)
-        for _, child in ipairs(workspace:GetDescendants()) do PacketDetector.checkAndHookBlobRemote(child) end
-        table.insert(packetConnections, workspace.DescendantAdded:Connect(PacketDetector.checkAndHookBlobRemote))
+
+        for _, child in ipairs(Workspace:GetDescendants()) do
+            checkAndHookBlobRemote(child)
+        end
+        table.insert(packetConnections, Workspace.DescendantAdded:Connect(checkAndHookBlobRemote))
     end
 
-    function PacketDetector.stop()
+    local function stopPacketDetector()
         for _, conn in ipairs(packetConnections) do
-            if typeof(conn) == "RBXScriptConnection" then conn:Disconnect() end
+            if typeof(conn) == "RBXScriptConnection" then
+                conn:Disconnect()
+            end
         end
         table.clear(packetConnections)
     end
@@ -7885,10 +7858,10 @@ do
         Callback = function(Value)
             SetToggleState("GrabRemoteDetector", Value)
             if Value then
-                PacketDetector.start()
+                startPacketDetector()
                 Library:Notify({ Title = "Enabled", Content = "Packet detector active", Duration = 4 })
             else
-                PacketDetector.stop()
+                stopPacketDetector()
                 Library:Notify({ Title = "Disabled", Content = "Packet detector off", Duration = 4 })
             end
         end
